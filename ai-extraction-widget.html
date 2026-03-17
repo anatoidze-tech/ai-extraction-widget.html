@@ -1,0 +1,635 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Document Extraction Widget</title>
+  <style>
+    /* ══════════════════════════════════════════════
+       BASE
+    ══════════════════════════════════════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+
+    body {
+      font-family: 'Helvetica Neue', Helvetica, -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+      background: #ffffff;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 24px;
+    }
+
+    .demo-surface {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 520px;
+    }
+
+    /* ── Language switcher ── */
+    .lang-switcher {
+      position: fixed;
+      top: 20px;
+      right: 24px;
+      display: flex;
+      gap: 2px;
+      background: #f0edf8;
+      border-radius: 8px;
+      padding: 3px;
+      z-index: 100;
+    }
+    .lang-btn {
+      font-family: 'Helvetica Neue', Helvetica, -apple-system, Arial, sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      padding: 5px 12px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: #9b90c2;
+      cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .lang-btn:hover { color: #7222ff; }
+    .lang-btn.active-lang {
+      background: #7222ff;
+      color: #ffffff;
+    }
+
+
+    /* ══════════════════════════════════════════════
+       AI WIDGET — CONTAINER
+       Matches Figma exactly:
+         bg: #f1e9ff  |  radius: 10px
+         padding: 16px  |  gap: 12px  |  width: 440px
+    ══════════════════════════════════════════════ */
+    .ai-widget {
+      background: #f1e9ff;
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 440px;
+      max-width: 100%;
+    }
+
+    /* ── Icon (20×22 SVG inline) ── */
+    .widget-icon {
+      width: 20px;
+      height: 22px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* ── Body ── */
+    .widget-body {
+      flex: 1;
+      min-width: 0;
+      position: relative;
+    }
+
+    /* ══════════════════════════════════════════════
+       STATE PANELS
+    ══════════════════════════════════════════════ */
+    .state-panel {
+      display: none;
+    }
+    .state-panel.active {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      animation: panelReveal 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+    }
+    @keyframes panelReveal {
+      from { opacity: 0; transform: translateY(3px); }
+      to   { opacity: 1; transform: translateY(0);   }
+    }
+
+
+    /* ══════════════════════════════════════════════
+       STATE 1 — ENABLED
+    ══════════════════════════════════════════════ */
+    .text-label {
+      flex: 1;
+      min-width: 0;
+      font-size: 14px;
+      line-height: 18px;
+      font-weight: 400;
+      color: #03022e;
+    }
+
+    .btn-extract {
+      flex-shrink: 0;
+      height: 32px;
+      padding: 0 16px;
+      border: 1.5px solid #7222ff;
+      border-radius: 8px;
+      background: transparent;
+      color: #7222ff;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: background 0.15s ease, color 0.15s ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .btn-extract:hover  { background: rgba(114, 34, 255, 0.07); }
+    .btn-extract:active { background: rgba(114, 34, 255, 0.14); }
+    .btn-extract:focus-visible { outline: 2px solid #7222ff; outline-offset: 2px; }
+
+
+    /* ══════════════════════════════════════════════
+       STATE 2 — LOADING
+    ══════════════════════════════════════════════ */
+    #stateLoading.active {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 8px;
+    }
+
+    /* Fixed-height shimmer wrapper prevents layout shift */
+    .shimmer-wrap {
+      height: 18px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /*
+      TEXT SHIMMER — faithful CSS port of the React TextShimmer component
+      ────────────────────────────────────────────────────────────────────
+      Two-layer background-image trick:
+        Layer 1: Moving gradient (the shimmer sweep)
+        Layer 2: Static gradient (the base/resting text color)
+
+      background-size: 250% 100%, auto
+        → gradient is 2.5× element width so only 40% is visible at once.
+        → Animating background-position 100%→0% sweeps the highlight L→R.
+
+      --spread: calculated per text (chars × 2px) for a wider/narrower beam.
+    */
+    .shimmer-text {
+      position: absolute;
+      left: 0; top: 0; right: 0;
+      font-size: 14px;
+      line-height: 18px;
+      font-weight: 400;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+
+      /* Shimmer tokens — using brand purple-300 as base, deep purple sweep */
+      --base-color:    #686782;   /* muted purple-gray: resting text color  */
+      --shimmer-color: #03022e;   /* dark navy: highlight beam sweep        */
+      --spread:        80px;      /* updated dynamically in JS (text.length × 2)    */
+
+      background-image:
+        linear-gradient(
+          90deg,
+          transparent                   calc(50% - var(--spread)),
+          var(--shimmer-color)          50%,
+          transparent                   calc(50% + var(--spread))
+        ),
+        linear-gradient(var(--base-color), var(--base-color));
+      background-size:     250% 100%, auto;
+      background-clip:     text;
+      -webkit-background-clip: text;
+      color:               transparent;
+      background-position: 100% center, 0 0;
+      background-repeat:   no-repeat, repeat;
+
+      animation: textShimmer 1.8s linear infinite;
+
+      /* Crossfade transitions between texts */
+      transition: opacity 0.18s ease, transform 0.18s ease;
+    }
+    .shimmer-text.exiting {
+      opacity: 0;
+      transform: translateY(-4px);
+    }
+    .shimmer-text.entering {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    @keyframes textShimmer {
+      from { background-position: 100% center, 0 0; }
+      to   { background-position:   0% center, 0 0; }
+    }
+
+    /* Progress bar — 3px, radius 100px */
+    .progress-track {
+      height: 3px;
+      border-radius: 100px;
+      background: #c7a7ff;   /* purple-300 */
+      overflow: hidden;
+      width: 100%;
+      flex-shrink: 0;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 100px;
+      background: #7222ff;   /* purple-500-base */
+      width: 0%;
+      transition: width 0.7s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+
+    /* ══════════════════════════════════════════════
+       STATE 3 — COMPLETED
+    ══════════════════════════════════════════════ */
+    .completed-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .btn-verify {
+      flex-shrink: 0;
+      height: 32px;
+      padding: 0 16px;
+      border: 1px solid #cdccd5;
+      border-radius: 8px;
+      background: #ffffff;
+      color: #03022e;
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+      white-space: nowrap;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      transition: background 0.15s ease, border-color 0.15s ease;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .btn-verify:hover  { background: #f6f3ff; border-color: #b8b3cc; }
+    .btn-verify:active { background: #ede8ff; }
+    .btn-verify:focus-visible { outline: 2px solid #7222ff; outline-offset: 2px; }
+
+    .btn-icon-reset {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 4px;
+      flex-shrink: 0;
+      transition: background 0.15s ease;
+    }
+    .btn-icon-reset:hover  { background: rgba(114, 34, 255, 0.08); }
+    .btn-icon-reset:active { background: rgba(114, 34, 255, 0.16); }
+    .btn-icon-reset:focus-visible { outline: 2px solid #7222ff; outline-offset: 2px; }
+    .btn-icon-reset img {
+      width: 20px;
+      height: 20px;
+      display: block;
+      transition: transform 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-icon-reset:active img { transform: rotate(-90deg); }
+    .btn-icon-reset.spinning img {
+      animation: spinReset 0.55s cubic-bezier(0.4, 0, 0.2, 1) both;
+    }
+    @keyframes spinReset {
+      from { transform: rotate(0deg);    }
+      to   { transform: rotate(-360deg); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Language switcher — fixed top-right -->
+  <div class="lang-switcher">
+    <button class="lang-btn active-lang" id="btnLangEN" onclick="setLang('en')">EN</button>
+    <button class="lang-btn"             id="btnLangKA" onclick="setLang('ka')">GE</button>
+  </div>
+
+  <div class="demo-surface">
+
+    <!-- ══ THE WIDGET ══════════════════════════════════════ -->
+    <div class="ai-widget">
+
+      <!-- Icon — inline SVG -->
+      <div class="widget-icon">
+        <svg width="20" height="22" viewBox="0 0 20 22" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12.75 0.75L18.75 6.75M12.75 0.75H5.75C4.09315 0.75 2.75 2.09315 2.75 3.75V8.75M12.75 0.75V5.75C12.75 6.30228 13.1977 6.75 13.75 6.75H18.75M18.75 6.75V15.75C18.75 17.4069 17.4069 18.75 15.75 18.75H12.75M6.75 8.75C6.75 8.75 7.09944 11.8267 8.38636 13.1136C9.67329 14.4006 12.75 14.75 12.75 14.75C12.75 14.75 9.65214 15.5078 8.38636 16.9318C7.30859 18.1443 6.75 20.75 6.75 20.75C6.75 20.75 6.19141 18.1443 5.11364 16.9318C3.84786 15.5078 0.75 14.75 0.75 14.75C0.75 14.75 3.82671 14.4006 5.11364 13.1136C6.40056 11.8267 6.75 8.75 6.75 8.75Z" stroke="#7222FF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+      <!-- State body -->
+      <div class="widget-body">
+
+        <!-- ─ STATE 1: ENABLED ─────────────────────── -->
+        <div class="state-panel active" id="stateEnabled">
+          <p class="text-label" id="enabledText">Extract and verify contract details</p>
+          <button class="btn-extract" id="btnExtract">Extract</button>
+        </div>
+
+        <!-- ─ STATE 2: LOADING ─────────────────────── -->
+        <div class="state-panel" id="stateLoading">
+          <div class="shimmer-wrap">
+            <span class="shimmer-text" id="shimmerText"></span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="progressFill"></div>
+          </div>
+        </div>
+
+        <!-- ─ STATE 3: COMPLETED ───────────────────── -->
+        <div class="state-panel" id="stateCompleted">
+          <p class="text-label" id="completedText" style="flex:1">Attributes have been extracted</p>
+          <div class="completed-actions">
+            <button class="btn-verify" id="btnVerify">Verify All</button>
+            <button class="btn-icon-reset" id="btnReset" title="Re-extract">
+              <img
+                src="https://www.figma.com/api/mcp/asset/a4acc857-5507-4da1-870e-abab00ed0e7b"
+                alt="Reset"
+              />
+            </button>
+          </div>
+        </div>
+
+      </div><!-- /widget-body -->
+    </div><!-- /ai-widget -->
+  </div><!-- /demo-surface -->
+
+
+  <script>
+  /* ══════════════════════════════════════════════════════════════
+     CONFIG
+  ══════════════════════════════════════════════════════════════ */
+  const TRANSLATIONS = {
+    en: {
+      enabledText:   'Extract and verify contract details',
+      extractBtn:    'Extract',
+      completedText: 'Attributes have been extracted',
+      verifyBtn:     'Verify All',
+      texts: [
+        'Scanning document structure...',
+        'Analyzing context and text...',
+        'Identifying key fields and data points\u2026',
+        'Extracting dates, names, and values\u2026',
+        'Cross-referencing document attributes\u2026',
+        'Validating extracted information\u2026',
+        'Organizing attributes for review\u2026',
+        'Almost there \u2014 finalizing your results\u2026',
+      ],
+    },
+    ka: {
+      enabledText:   '\u10e8\u10d4\u10d0\u10d5\u10e1\u10d4 \u10d0\u10e2\u10e0\u10d8\u10d1\u10e3\u10e2\u10d4\u10d1\u10d8 \u10d4\u10e0\u10d7\u10d8 \u10d9\u10da\u10d8\u10d9\u10d8\u10d7',
+      extractBtn:    '\u10e8\u10d4\u10d5\u10e1\u10d4\u10d1\u10d0',
+      completedText: '\u10d0\u10e2\u10e0\u10d8\u10d1\u10e3\u10e2\u10d4\u10d1\u10d8 \u10d0\u10db\u10dd\u10e6\u10d4\u10d1\u10e3\u10da\u10d8\u10d0',
+      verifyBtn:     '\u10d3\u10d0\u10d3\u10d0\u10e1\u10e2\u10e3\u10e0\u10d4\u10d1\u10d0',
+      texts: [
+        '\u10d3\u10dd\u10d9\u10e3\u10db\u10d4\u10dc\u10e2\u10d8\u10e1 \u10e1\u10e2\u10e0\u10e3\u10e5\u10e2\u10e3\u10e0\u10d8\u10e1 \u10e1\u10d9\u10d0\u10dc\u10d8\u10e0\u10d4\u10d1\u10d0\u2026',
+        '\u10e2\u10d4\u10e5\u10e1\u10e2\u10d8\u10e1 \u10d3\u10d0 \u10d9\u10dd\u10dc\u10e2\u10d4\u10e5\u10e1\u10e2\u10d8\u10e1 \u10d0\u10dc\u10d0\u10da\u10d8\u10d6\u10d8...',
+        '\u10e1\u10d0\u10d9\u10d5\u10d0\u10dc\u10eb\u10dd \u10db\u10dd\u10dc\u10d0\u10ea\u10d4\u10db\u10d4\u10d1\u10d8\u10e1 \u10d8\u10d3\u10d4\u10dc\u10e2\u10d8\u10e4\u10d8\u10ea\u10d8\u10e0\u10d4\u10d1\u10d0\u2026',
+        '\u10d7\u10d0\u10e0\u10d8\u10e6\u10d4\u10d1\u10d8\u10e1 \u10d3\u10d0 \u10db\u10dc\u10d8\u10e8\u10d5\u10dc\u10d4\u10da\u10dd\u10d1\u10d4\u10d1\u10d8\u10e1 \u10d0\u10db\u10dd\u10e6\u10d4\u10d1\u10d0\u2026',
+        '\u10d3\u10dd\u10d9\u10e3\u10db\u10d4\u10dc\u10e2\u10d8\u10e1 \u10d0\u10e2\u10e0\u10d8\u10d1\u10e3\u10e2\u10d4\u10d1\u10d8\u10e1 \u10d2\u10d0\u10d3\u10d0\u10db\u10dd\u10ec\u10db\u10d4\u10d1\u10d0\u2026',
+        '\u10d8\u10dc\u10e4\u10dd\u10e0\u10db\u10d0\u10ea\u10d8\u10d8\u10e1 \u10d5\u10d0\u10da\u10d8\u10d3\u10d0\u10ea\u10d8\u10d0\u2026',
+        '\u10d0\u10db\u10dd\u10e6\u10d4\u10d1\u10e3\u10da\u10d8 \u10d0\u10e2\u10e0\u10d8\u10d1\u10e3\u10e2\u10d4\u10d1\u10d8\u10e1 \u10e8\u10d4\u10ef\u10d0\u10db\u10d4\u10d1\u10d0...',
+        '\u10d7\u10d8\u10d7\u10e5\u10db\u10d8\u10e1 \u10db\u10d6\u10d0\u10d3\u10d0\u10d0 \u2014 \u10e8\u10d4\u10d3\u10d4\u10d2\u10d4\u10d1\u10d8\u10e1 \u10d0\u10dc\u10d0\u10da\u10d8\u10d6\u10d8\u2026',
+      ],
+    },
+  };
+
+  // Non-linear progress — accelerates early, slows near end
+  const PROGRESS = [6, 17, 30, 44, 58, 71, 84, 94];
+
+  const TEXT_DISPLAY_MS    = 3000;   // each text shows for 3 s
+  const SHIMMER_DURATION_S = 1.8;    // one shimmer pass
+  const FREEZE_CYCLES      = 2;      // shimmer plays N times on last text before freezing
+  const COMPLETE_DELAY_MS  = 700;    // pause after freeze → completed state
+
+  /* ══════════════════════════════════════════════════════════════
+     STATE
+  ══════════════════════════════════════════════════════════════ */
+  let phase       = 'idle';   // idle | loading | completed
+  let textIndex   = 0;
+  let timer       = null;
+  let currentLang = 'en';
+
+  /* ══════════════════════════════════════════════════════════════
+     ELEMENTS
+  ══════════════════════════════════════════════════════════════ */
+  const elShimmer  = document.getElementById('shimmerText');
+  const elProgress = document.getElementById('progressFill');
+  const panels = {
+    idle:      document.getElementById('stateEnabled'),
+    loading:   document.getElementById('stateLoading'),
+    completed: document.getElementById('stateCompleted'),
+  };
+
+  /* ══════════════════════════════════════════════════════════════
+     HELPERS
+  ══════════════════════════════════════════════════════════════ */
+
+  /** Show a state panel, hide others */
+  function showPanel(name) {
+    Object.entries(panels).forEach(([key, el]) => {
+      el.classList.remove('active');
+    });
+    // Force reflow so the animation re-triggers if same panel shown again
+    void panels[name].offsetWidth;
+    panels[name].classList.add('active');
+  }
+
+  /** Current language texts shorthand */
+  function getTexts() { return TRANSLATIONS[currentLang].texts; }
+
+  /** Set --spread on shimmer based on text length (mirrors React formula: length × 2) */
+  function setSpread(text) {
+    const spread = Math.max(text.length * 2, 48);
+    elShimmer.style.setProperty('--spread', `${spread}px`);
+  }
+
+  /**
+   * Restart the CSS shimmer animation on the shimmer element.
+   * Uses the offsetWidth reflow trick to force a restart mid-animation.
+   *
+   * @param {boolean} infinite  - true = loop forever; false = freeze after FREEZE_CYCLES
+   */
+  function restartShimmer(infinite) {
+    elShimmer.style.animation = 'none';
+    void elShimmer.offsetWidth;   // force reflow — critical for animation restart
+    if (infinite) {
+      elShimmer.style.animation =
+        `textShimmer ${SHIMMER_DURATION_S}s linear infinite`;
+    } else {
+      // animation-fill-mode: forwards → stays at 0% backgroundPosition after last cycle
+      // = highlight swept fully off the left → text appears in --base-color (frozen/muted)
+      elShimmer.style.animation =
+        `textShimmer ${SHIMMER_DURATION_S}s linear ${FREEZE_CYCLES} forwards`;
+    }
+  }
+
+  /** Crossfade to a new text string with exit/enter micro-animation */
+  function transitionText(newText, isLast) {
+    setSpread(newText);
+
+    // 1. Exit — slide up + fade
+    elShimmer.classList.add('exiting');
+    elShimmer.classList.remove('entering');
+
+    setTimeout(() => {
+      // 2. Swap text content
+      elShimmer.textContent = newText;
+      setSpread(newText);
+
+      // 3. Restart shimmer (before becoming visible)
+      restartShimmer(!isLast);
+
+      // 4. Enter — slide up from below + fade in
+      elShimmer.classList.remove('exiting');
+      elShimmer.classList.add('entering');
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          elShimmer.classList.remove('entering');
+        });
+      });
+    }, 200);
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     TEXT CYCLING
+  ══════════════════════════════════════════════════════════════ */
+  function scheduleNext() {
+    if (phase !== 'loading') return;
+
+    textIndex++;
+    const texts = getTexts();
+    if (textIndex >= texts.length) {
+      // All texts shown — wait for freeze animation to complete then go to completed
+      const freezeMs = SHIMMER_DURATION_S * FREEZE_CYCLES * 1000;
+      timer = setTimeout(transitionToCompleted, freezeMs + COMPLETE_DELAY_MS);
+      return;
+    }
+
+    const isLast = (textIndex === texts.length - 1);
+
+    // Advance progress bar
+    elProgress.style.width = PROGRESS[textIndex] + '%';
+
+    // Crossfade to new text
+    transitionText(texts[textIndex], isLast);
+
+    if (isLast) {
+      // Last text: freeze after FREEZE_CYCLES shimmer passes
+      const freezeMs = SHIMMER_DURATION_S * FREEZE_CYCLES * 1000;
+      timer = setTimeout(transitionToCompleted, freezeMs + COMPLETE_DELAY_MS);
+    } else {
+      timer = setTimeout(scheduleNext, TEXT_DISPLAY_MS);
+    }
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     STATE TRANSITIONS
+  ══════════════════════════════════════════════════════════════ */
+  function startExtraction() {
+    if (phase === 'loading') return;
+    if (timer) clearTimeout(timer);
+
+    phase      = 'loading';
+    textIndex  = 0;
+
+    // Seed first text immediately (no crossfade — fresh start)
+    elShimmer.classList.remove('exiting', 'entering');
+    elShimmer.textContent = getTexts()[0];
+    setSpread(getTexts()[0]);
+    restartShimmer(true);
+
+    // Reset & show progress bar at first step (no animation flash)
+    elProgress.style.transition = 'none';
+    elProgress.style.width = PROGRESS[0] + '%';
+    setTimeout(() => {
+      elProgress.style.transition = 'width 0.7s cubic-bezier(0.4, 0, 0.2, 1)';
+    }, 60);
+
+    showPanel('loading');
+
+    timer = setTimeout(scheduleNext, TEXT_DISPLAY_MS);
+  }
+
+  function transitionToCompleted() {
+    if (phase !== 'loading') return;
+    phase = 'completed';
+
+    elProgress.style.width = '100%';
+
+    setTimeout(() => showPanel('completed'), 300);
+  }
+
+  function resetWidget() {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    phase = 'idle';
+
+    // Spin the reset icon
+    const btn = document.getElementById('btnReset');
+    btn.classList.remove('spinning');
+    void btn.offsetWidth;
+    btn.classList.add('spinning');
+
+    elProgress.style.width = '0%';
+    textIndex = 0;
+
+    setTimeout(() => showPanel('idle'), 120);
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     LANGUAGE
+  ══════════════════════════════════════════════════════════════ */
+  function setLang(lang) {
+    if (lang === currentLang) return;
+    currentLang = lang;
+    const t = TRANSLATIONS[lang];
+
+    // Static text nodes
+    document.getElementById('enabledText').textContent   = t.enabledText;
+    document.getElementById('btnExtract').textContent    = t.extractBtn;
+    document.getElementById('completedText').textContent = t.completedText;
+    document.getElementById('btnVerify').textContent     = t.verifyBtn;
+
+    // If mid-loading, swap the current shimmer text immediately
+    if (phase === 'loading') {
+      const text = t.texts[textIndex];
+      elShimmer.textContent = text;
+      setSpread(text);
+    }
+
+    // Switcher active state
+    document.getElementById('btnLangEN').classList.toggle('active-lang', lang === 'en');
+    document.getElementById('btnLangKA').classList.toggle('active-lang', lang === 'ka');
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     EVENTS
+  ══════════════════════════════════════════════════════════════ */
+  document.getElementById('btnExtract').addEventListener('click', startExtraction);
+  document.getElementById('btnReset').addEventListener('click', resetWidget);
+  document.getElementById('btnVerify').addEventListener('click', () => {
+    console.log('Verify All — connect to verify flow');
+  });
+  </script>
+</body>
+</html>
